@@ -74,3 +74,17 @@ int json_bool(const char *json, const jsmntok_t *token, int *out_value)
 
 	return -1;
 }
+
+int json_int(const char *json, const jsmntok_t *tok, int *out_value)
+{
+	if (tok->type == JSMN_PRIMITIVE) {
+		char *temp = calloc(1, tok->end - tok->start + 1);
+		strncpy(temp, json+tok->start, (tok->end - tok->start));
+		*out_value = (int)strtol(temp, NULL, 10);
+		if (*out_value == 0)
+			return -1;
+		return 0;
+	}
+
+	return -1;
+}

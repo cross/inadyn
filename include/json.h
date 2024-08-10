@@ -28,5 +28,6 @@
 int parse_json(const char *json, jsmntok_t *out_tokens[]);
 int jsoneq(const char *json, const jsmntok_t *tok, const char *s);
 int json_bool(const char *json, const jsmntok_t *token, int *out_value);
+int json_int(const char *json, const jsmntok_t *tok, int *out_value);
 
 #endif

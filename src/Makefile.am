@@ -36,7 +36,7 @@ inadyn_SOURCES  += ../plugins/common.c		../plugins/changeip.c		\
 		   ../plugins/ddnss.c		../plugins/dhis.c		\
 		   ../plugins/dnsexit.c		../plugins/dnspod.c		\
 		   ../plugins/duckdns.c		../plugins/duiadns.c		\
-		   ../plugins/dyndns.c		../plugins/dynv6.c		\
+		   ../plugins/dyndns.c		../plugins/dynu.c ../plugins/dynv6.c		\
 		   ../plugins/easydns.c		../plugins/freedns.c		\
 		   ../plugins/freemyip.c	../plugins/generic.c		\
 		   ../plugins/giradns.c						\
