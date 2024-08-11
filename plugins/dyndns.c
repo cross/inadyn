@@ -10,7 +10,9 @@
  *   - nsupdate.info
  *   - Google Domains
  *   - SPDYN
+ #if 0
  *   - Dynu
+ #endif
  *
  * Copyright (C) 2003-2004  Narcis Ilisei <inarcis2002@hotpop.com>
  * Copyright (C) 2006       Steve Horbachuk
@@ -274,7 +276,7 @@ static ddns_system_t googledomains = {
 	.server_name  = "domains.google.com",
 	.server_url   = "/nic/update"
 };
-
+#if 0
 static ddns_system_t dynu = {
 	.name         = "default@dynu.com",
 
@@ -287,7 +289,7 @@ static ddns_system_t dynu = {
 	.server_name  = "api.dynu.com",
 	.server_url   = "/nic/update"
 };
-
+#endif
 static ddns_system_t dyfi = {
 	.name         = "default@dy.fi",
 
@@ -529,8 +531,10 @@ PLUGIN_INIT(plugin_init)
 	plugin_register(&loopia, DYNDNS_UPDATE_IP_HTTP_REQUEST);
 	plugin_register(&googledomains, DYNDNS_UPDATE_IP_HTTP_REQUEST);
 	plugin_register_v6(&googledomains, DYNDNS_UPDATE_IP_HTTP_REQUEST);
+#if 0
 	plugin_register(&dynu, DYNDNS_UPDATE_IP_HTTP_REQUEST);
 	plugin_register_v6(&dynu, DYNDNS_UPDATE_IPV6_HTTP_REQUEST);
+#endif
 	plugin_register(&dyfi, DYNDNS_UPDATE_IP_HTTP_REQUEST);
 	plugin_register_v6(&dyfi, DYNDNS_UPDATE_IP_HTTP_REQUEST);
 	plugin_register(&dode, DYNDNS_UPDATE_IP_HTTP_REQUEST);
@@ -574,7 +578,9 @@ PLUGIN_EXIT(plugin_exit)
 	plugin_unregister(&nsupdate_info_ipv6);
 	plugin_unregister(&loopia);
 	plugin_unregister(&googledomains);
+#if 0
 	plugin_unregister(&dynu);
+#endif
 	plugin_unregister(&dyfi);
 	plugin_unregister(&dode);
 	plugin_unregister(&domopoli);

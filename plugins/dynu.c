@@ -35,16 +35,7 @@ static const char *DYNU_DOMAIN_ID_REQUEST = "GET " API_URL "/dns/getroot/%s HTTP
 	"Accept: */*\r\n"				\
 	"API-Key: %s\r\n"	\
 	"Content-Type: application/json\r\n\r\n";
-
 #if 0
-/* https://developers.cloudflare.com/api/operations/zones-get */
-static const char *DYNU_DOMAINS_REQUEST = "GET " API_URL "/dns HTTP/1.0\r\n"	\
-	"Host: " API_HOST "\r\n"		\
-	"User-Agent: %s\r\n"			\
-	"Accept: */*\r\n"				\
-	"API-Key: %s\r\n"	\
-	"Content-Type: application/json\r\n\r\n";
-#endif
 /* https://developers.cloudflare.com/api/operations/dns-records-for-a-zone-dns-record-details */	
 static const char *DYNU_HOSTNAME_NAME_REQUEST_BY_ID	= "GET " API_URL "/zones/%s/dns_records/%s HTTP/1.0\r\n"	\
 	"Host: " API_HOST "\r\n"		\
@@ -52,7 +43,7 @@ static const char *DYNU_HOSTNAME_NAME_REQUEST_BY_ID	= "GET " API_URL "/zones/%s/
 	"Accept: */*\r\n"				\
 	"API-Key: %s\r\n"	\
 	"Content-Type: application/json\r\n\r\n";
-
+#endif
 /* https://developers.cloudflare.com/api/operations/dns-records-for-a-zone-list-dns-records */	
 static const char *DYNU_HOSTNAME_ID_REQUEST_BY_NAME	= "GET " API_URL "/dns/record/%s?recordType=%s HTTP/1.0\r\n"	\
 	"Host: " API_HOST "\r\n"		\
@@ -62,7 +53,7 @@ static const char *DYNU_HOSTNAME_ID_REQUEST_BY_NAME	= "GET " API_URL "/dns/recor
 	"Content-Type: application/json\r\n\r\n";
 
 /* https://developers.cloudflare.com/api/operations/dns-records-for-a-zone-create-dns-record */	
-static const char *DYNU_HOSTNAME_CREATE_REQUEST	= "POST " API_URL "/zones/%s/dns_records HTTP/1.0\r\n"	\
+static const char *DYNU_HOSTNAME_CREATE_REQUEST	= "POST " API_URL "/dns/%s/record HTTP/1.0\r\n"	\
 	"Host: " API_HOST "\r\n"		\
 	"User-Agent: %s\r\n"			\
 	"Accept: */*\r\n"				\
@@ -72,7 +63,7 @@ static const char *DYNU_HOSTNAME_CREATE_REQUEST	= "POST " API_URL "/zones/%s/dns
 	"%s";
 
 /* https://developers.cloudflare.com/api/operations/dns-records-for-a-zone-update-dns-record */
-static const char *DYNU_HOSTNAME_UPDATE_REQUEST	= "PUT " API_URL "/dns/%s/record/%s HTTP/1.0\r\n"	\
+static const char *DYNU_HOSTNAME_UPDATE_REQUEST	= "POST " API_URL "/dns/%s/record/%s HTTP/1.0\r\n"	\
 	"Host: " API_HOST "\r\n"		\
 	"User-Agent: %s\r\n"			\
 	"Accept: */*\r\n"				\
@@ -81,11 +72,12 @@ static const char *DYNU_HOSTNAME_UPDATE_REQUEST	= "PUT " API_URL "/dns/%s/record
 	"Content-Length: %zd\r\n\r\n" \
 	"%s";
 	
-static const char *DYNU_UPDATE_JSON_FORMAT = "{\"type\":\"%s\",\"name\":\"%s%s\",\"content\":\"%s\",\"ttl\":%li,\"proxied\":%s}";
+/* TODO: The API uses "hostname" in a number of places, but the syntax needs to be "nodeName" in other places.  Can that work here? */
+static const char *DYNU_UPDATE_JSON_FORMAT = "{\"nodeName\":\"%s\",\"recordType\":\"%s\",\"%s\":\"%s\",\"ttl\":%li}";
+static const char *DYNU_UPDATE_JSON_FORMAT_NOTTL = "{\"nodeName\":\"%s\",\"recordType\":\"%s\",\"%s\":\"%s\"}";
 
 static const char *IPV4_RECORD_TYPE = "A";
 static const char *IPV6_RECORD_TYPE = "AAAA";
-static const char *KEY_SUCCESS = "success";
 
 static int setup    (ddns_t       *ctx,   ddns_info_t *info, ddns_alias_t *hostname);
 static int request  (ddns_t       *ctx,   ddns_info_t *info, ddns_alias_t *hostname);
@@ -121,6 +113,7 @@ static ddns_system_t plugin = {
 struct dynudata {
 	char domain_id[MAX_ID];
 	char hostname_id[MAX_ID];
+	char nodename[MAXHOSTNAMELEN];
 };
 
 static int check_response_code(int status)
@@ -168,7 +161,7 @@ static int check_success(const char *json, const jsmntok_t tokens[], const int n
 	}
 
 	if (i == num_tokens)
-		logit(LOG_DEBUG, "Failed to find 'statusCode' key in json buffer");
+		logit(LOG_DEBUG, "Failed to find 'statusCode' key in JSON buffer");
 
 	return -1;
 }
@@ -211,7 +204,7 @@ static int get_result_value(const char *json, const char *key, jsmntok_t *out_re
 	}
 	
 	for (i = 1; i < num_tokens; i++) {
-		logit(LOG_DEBUG, "Iterating JSON searching for '%s', token is a %d at offset %ld.", key, tokens[i].type, tokens[i].start);
+//		logit(LOG_DEBUG, "Iterating JSON searching for '%s', token is a %d at offset %ld.", key, tokens[i].type, tokens[i].start);
 		if (jsoneq(json, tokens + i, key) != 0)
 			continue;
 
@@ -265,9 +258,10 @@ static int retrieve_json(char *dest, size_t dest_size, const ddns_info_t *info, 
 
 	/* XXX Do we have to worry that this was allocated? 
 	   Maybe I should just pass the context through? */
-	if (dest == NULL)
-		return RC_INVALID_POINTER;
-
+	if (dest == NULL) {
+		rc = RC_INVALID_POINTER;
+		goto cleanup;
+	}
 	memset(dest, 0, dest_size);
 
 	CHECK(http_construct(&client));
@@ -302,7 +296,8 @@ static int retrieve_json(char *dest, size_t dest_size, const ddns_info_t *info, 
 cleanup:
 	free(response_buf);
 
-	logit(LOG_DEBUG, "Returning result body at %p", dest);
+	if (rc == RC_OK)
+		logit(LOG_DEBUG, "Returning result body at %p", dest);
 	return rc;
 }
 
@@ -311,6 +306,7 @@ static int json_extract(char *dest, size_t dest_size, const char *json, const ch
 	jsmntok_t     key_value;
 	int           rc = RC_OK;
 
+	// TODO: get_result_value() parses the JSON each time.  We should refactor that too.
 	logit(LOG_DEBUG, "retriving '%s' from buffer at %p", key, json);
 	if (get_result_value(json, key, &key_value) < 0) {
 		return RC_DDNS_RSP_NOHOST;
@@ -326,26 +322,24 @@ static int json_extract(char *dest, size_t dest_size, const char *json, const ch
 			rc = RC_BUFFER_OVERFLOW;
 		}
 	} else if (key_value.type == JSMN_PRIMITIVE) {
-		logit(LOG_DEBUG, "json_extract: PRIMATIVE at %d, size %d (starts with '%c', ends at %d)", key_value.start, key_value.size, json[key_value.start], key_value.end);
-		
 		/* Copy out the right substring, with nul term. */
-		char *copy = strndup(json+key_value.start, key_value.end-key_value.start);
-		logit(LOG_DEBUG, "Primitive for key '%s' is '%s'", key, copy);
+		char *val_copy = strndup(json+key_value.start, key_value.end-key_value.start);
+		logit(LOG_DEBUG, "Primitive for key '%s' is '%s'", key, val_copy);
 
 		/* Verify it's an int.  Should likely later deal with boolean/null */
-		// XXX - should use copy here...
-		if (json[key_value.start] == '-' || (json[key_value.start] >= '0' && json[key_value.start] <= '9')) {
-			long rc = strtol(copy, NULL, 10);
-			if ((rc == LONG_MAX) || (strlen(copy) >= dest_size))
-				rc = RC_DDNS_RSP_NOHOST;
-			strncpy(dest,copy,strlen(copy)+1);
+		if (val_copy[0] == '-' || (val_copy[0] >= '0' && val_copy[0] <= '9')) {
+			long rc = strtol(val_copy, NULL, 10);
+			if ((rc == LONG_MAX) || (strlen(val_copy) >= dest_size))
+				rc = RC_BUFFER_OVERFLOW;
+			else
+				strncpy(dest,val_copy,strlen(val_copy)+1);
 		} else {
-			logit(LOG_DEBUG, "Primitive for key %s was not a number (%s)", key, copy);
+			logit(LOG_DEBUG, "Primitive for key %s was not a number (%s)", key, val_copy);
 			/* Unsupprted type */
 			rc = RC_DDNS_RSP_NOHOST;
 		}
-		if (copy)
-			free(copy);
+		if (val_copy)
+			free(val_copy);
 	} else {
 		rc = RC_DDNS_RSP_NOHOST;
 	}
@@ -386,7 +380,7 @@ static int setup(ddns_t *ctx, ddns_info_t *info, ddns_alias_t *hostname)
 	info->data = data;
 
 	record_type = get_record_type(hostname->address);
-#if 0
+#if 0  // If I want to get the domain id, use this.  But I can get that id from the host request below.
 	logit(LOG_DEBUG, "Domain: %s", domain_name);
 
 	len = snprintf(ctx->request_buf, ctx->request_buflen,
@@ -421,24 +415,35 @@ static int setup(ddns_t *ctx, ddns_info_t *info, ddns_alias_t *hostname)
 	}
 
 	CHECK(retrieve_json(ctx->work_buf, ctx->work_buflen, info, ctx->request_buf, ctx->request_buflen));
-	rc = json_extract(data->hostname_id, MAX_ID, ctx->work_buf, "id");
 
-	if (rc == RC_OK) {
-		rc = json_extract(data->domain_id, MAX_ID, ctx->work_buf, "domainId");
-		if (rc == RC_OK) {
-			logit(LOG_DEBUG, "Dynu Host: '%s' Id: %s, Domain Id: %s", hostname->name, data->hostname_id, data->domain_id);
-		} else if (rc == RC_DDNS_RSP_NOHOST) {
-			strcpy(data->domain_id, "");
-			return RC_OK;
-		} else {
-			logit(LOG_INFO, "DomainId for hostname '%s', id %s, not found.", hostname->name, data->hostname_id);
-		}
-	} else if (rc == RC_DDNS_RSP_NOHOST) {
+	rc = json_extract(data->hostname_id, MAX_ID, ctx->work_buf, "id");
+	if (rc == RC_DDNS_RSP_NOHOST) {
 		strcpy(data->hostname_id, "");
+		// Make a call to retrieve the domain_id
 		return RC_OK;
-	} else {
+	} else if (rc != RC_OK) {
 		logit(LOG_INFO, "Hostname '%s' not found.", hostname->name);
+		goto cleanup;
 	}
+
+	rc = json_extract(data->domain_id, MAX_ID, ctx->work_buf, "domainId");
+	if (rc == RC_DDNS_RSP_NOHOST) {
+		strcpy(data->domain_id, "");
+		return RC_OK;
+	} else if (rc != RC_OK) {
+		logit(LOG_INFO, "DomainId for hostname '%s', id %s, not found.", hostname->name, data->hostname_id);
+		goto cleanup;
+	}
+	rc = json_extract(data->nodename, MAXHOSTNAMELEN, ctx->work_buf, "nodeName");
+	if (rc == RC_DDNS_RSP_NOHOST) {
+		strcpy(data->nodename, "");
+		return RC_OK;
+	} else if (rc != RC_OK) {
+		logit(LOG_INFO, "Nodename for hostname '%s', id %s, not found.", hostname->name, data->hostname_id);
+		goto cleanup;
+	}
+
+	logit(LOG_DEBUG, "Dynu Host: '%s' (nodename '%s') Id: %s, Domain Id: %s", hostname->name, data->nodename, data->hostname_id, data->domain_id);
 
 cleanup:
 	/* Should I free the info->data I allocated?  I think not... */
@@ -448,22 +453,56 @@ cleanup:
 
 static int request(ddns_t *ctx, ddns_info_t *info, ddns_alias_t *hostname)
 {
-	const char *record_type;
+	const char *record_type, *record_key;
 	struct dynudata *data = (struct dynudata *)info->data;
 	size_t content_len;
 	char json_data[256];
 
+	if (!*data->domain_id) {
+		logit(LOG_ERR, "Cannot place request with a null domain_id");
+		return -1;
+	}
+
 	record_type = get_record_type(hostname->address);
-	content_len = snprintf(json_data, sizeof(json_data),
-			       DYNU_UPDATE_JSON_FORMAT,
-			       record_type,
-		       	       info->wildcard ? "*." : "",
-			       hostname->name,
-			       hostname->address,
-			       info->ttl >= 0 ? info-> ttl : 1, // Time to live for DNS record. Value of 1 is 'automatic'
-			       info->proxied ? "true" : "false");
+	if (strcmp(record_type, IPV4_RECORD_TYPE) == 0) {
+		record_key = "ipv4Address";
+	} else if (strcmp(record_type, IPV6_RECORD_TYPE) == 0) {
+		record_key = "ipv6Address";
+	}
 
+	/* I need the node name, within the domain, not the whole hostname.
+       For existing hosts, I got it back in setup().  If not, then
+	   remove the domain if the specified name was qualified. */
+	char *nodename = data->nodename;
+	if (strlen(nodename) == 0) {
+		char *domain_part = strstr(hostname->name, info->creds.username);
+		if (domain_part == NULL) {
+			nodename = hostname->name;
+		} else {
+			nodename = strndup(hostname->name, (domain_part - hostname->name - 1));
+			/* I'm not checking for the dot, I'm assuming.  That's safe here, right?  */
+			/* XXX LEAK! */
+		}
+	}
 
+	if (info->ttl >= 0) {
+		content_len = snprintf(json_data, sizeof(json_data),
+					DYNU_UPDATE_JSON_FORMAT,
+					nodename,
+					record_type,
+					record_key,
+					hostname->address,
+					info->ttl);
+	} else {
+		content_len = snprintf(json_data, sizeof(json_data),
+					DYNU_UPDATE_JSON_FORMAT_NOTTL,
+					nodename,
+					record_type,
+					record_key,
+					hostname->address);
+	}
+
+	logit(LOG_DEBUG, "hostname_id is '%s', domain_id is '%s'",data->hostname_id, data->domain_id);
 	if (strlen(data->hostname_id) == 0)
 		return snprintf(ctx->request_buf, ctx->request_buflen,
 			DYNU_HOSTNAME_CREATE_REQUEST,
@@ -497,8 +536,8 @@ static int response(http_trans_t *trans, ddns_info_t *info, ddns_alias_t *hostna
 
 PLUGIN_INIT(plugin_init)
 {
-	plugin_register(&plugin, DYNU_HOSTNAME_ID_REQUEST_BY_NAME);
-	plugin_register_v6(&plugin, DYNU_HOSTNAME_ID_REQUEST_BY_NAME);
+	plugin_register(&plugin, DYNU_HOSTNAME_UPDATE_REQUEST);
+	plugin_register_v6(&plugin, DYNU_HOSTNAME_UPDATE_REQUEST);
 }
 
 PLUGIN_EXIT(plugin_exit)
