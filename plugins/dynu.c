@@ -163,10 +163,13 @@ static int check_success(const char *json, const jsmntok_t tokens[], const int n
 
 		if (i < num_tokens - 1 && json_int(json, tokens + i + 1, &stat) == 0)
 			return ((stat / 100) == 2) ? 0 : -1;
-				
+
 		return -1;
 	}
-	
+
+	if (i == num_tokens)
+		logit(LOG_DEBUG, "Failed to find 'statusCode' key in json buffer");
+
 	return -1;
 }
 
@@ -192,11 +195,13 @@ static int get_result_value(const char *json, const char *key, jsmntok_t *out_re
 	int i, num_tokens;
 	
 	num_tokens = parse_json(json, &tokens);
-	if (num_tokens < 0)
+	if (num_tokens < 0) {
+		logit(LOG_DEBUG, "parse_json() returned %d", num_tokens);
 		return -1;
+	}
 	
 	if (tokens[0].type != JSMN_OBJECT) {
-		logit(LOG_ERR, "JSON response contained no objects.");
+		logit(LOG_ERR, "JSON response was not an object.");
 		goto cleanup;
 	}
 	
@@ -206,7 +211,7 @@ static int get_result_value(const char *json, const char *key, jsmntok_t *out_re
 	}
 	
 	for (i = 1; i < num_tokens; i++) {
-		logit(LOG_DEBUG, "Iterating json searching for '%s', token is a %d at offset %ld.", key, tokens[i].type, tokens[i].start);
+		logit(LOG_DEBUG, "Iterating JSON searching for '%s', token is a %d at offset %ld.", key, tokens[i].type, tokens[i].start);
 		if (jsoneq(json, tokens + i, key) != 0)
 			continue;
 
@@ -244,13 +249,11 @@ static int json_copy_value(char *dest, size_t dest_size, const char *json, const
 	return 0;
 }
 
-/* Find an object in an array where "key" matches "value", and return it. */
-static int json_find_object(jsmntok_t *dest, const ddns_info_t *info, char *request, size_t request_len, const char *key)
+/* Issue an HTTP request, and retrieve/provide the response.  It is expected
+   to be JSON, but this method doesn't ensure that. */
+static int retrieve_json(char *dest, size_t dest_size, const ddns_info_t *info, char *request, size_t request_len)
 {
-	/* XXX This shares too much code with json_extract(). */
-	const char   *body;
 	http_trans_t  trans;
-	jsmntok_t     key_value;
 	http_t        client;
 	char         *response_buf;
 	size_t        response_buflen = DDNS_HTTP_RESPONSE_BUFFER_SIZE;
@@ -259,6 +262,13 @@ static int json_find_object(jsmntok_t *dest, const ddns_info_t *info, char *requ
 	response_buf = calloc(response_buflen, sizeof(char));
 	if (!response_buf)
 		return RC_OUT_OF_MEMORY;
+
+	/* XXX Do we have to worry that this was allocated? 
+	   Maybe I should just pass the context through? */
+	if (dest == NULL)
+		return RC_INVALID_POINTER;
+
+	memset(dest, 0, dest_size);
 
 	CHECK(http_construct(&client));
 
@@ -282,90 +292,49 @@ static int json_find_object(jsmntok_t *dest, const ddns_info_t *info, char *requ
 	logit(LOG_DEBUG, "Response:\n%s", trans.rsp);
 	CHECK(check_response_code(trans.status));
 
-	body = trans.rsp_body;
-	/* Find the domains list */
-	if (get_result_value(body, key, &key_value) < 0) {
-		rc = RC_DDNS_RSP_NOHOST;
+	/* Copy the body out of the response, then free the response buf  */
+	int body_len = trans.rsp_len - (trans.rsp_body - trans.rsp);
+	if (dest_size < body_len+1) {
+		rc = RC_BUFFER_OVERFLOW;
 		goto cleanup;
 	}
-
-	if (key_value.type != JSMN_ARRAY) {
-		logit(LOG_DEBUG, "Unexpected value type %d, expected JSMN_ARRAY (%d)", key_value.type, JSMN_ARRAY);
-	}
-
-	/* TODO: How to iterate the array? */
-	logit(LOG_DEBUG, "Need to iterate the returned array, key_value start,end,size = %d,%d,%d", key_value.start, key_value.end, key_value.size);
-
-/*
-	if (json_copy_value(dest, dest_size, body, &key_value) < 0) {
-		logit(LOG_ERR, "Key value did not fit into buffer.");
-		rc = RC_BUFFER_OVERFLOW;
-	}
-	logit(LOG_DEBUG, "Key '%s' = %s", key, dest);
-*/
+	memmove(dest, trans.rsp_body, body_len+1);
 cleanup:
 	free(response_buf);
 
+	logit(LOG_DEBUG, "Returning result body at %p", dest);
 	return rc;
 }
 
-static int json_extract(char *dest, size_t dest_size, const ddns_info_t *info, char *request, size_t request_len, const char *key)
+static int json_extract(char *dest, size_t dest_size, const char *json, const char *key)
 {
-	const char   *body;
-	http_trans_t  trans;
 	jsmntok_t     key_value;
-	http_t        client;
-	char         *response_buf;
-	size_t        response_buflen = DDNS_HTTP_RESPONSE_BUFFER_SIZE;
 	int           rc = RC_OK;
 
-	response_buf = calloc(response_buflen, sizeof(char));
-	if (!response_buf)
-		return RC_OUT_OF_MEMORY;
-
-	CHECK(http_construct(&client));
-
-	http_set_port(&client, info->server_name.port);
-	http_set_remote_name(&client, info->server_name.name);
-
-	client.ssl_enabled = info->ssl_enabled;
-	CHECK(http_init(&client, "Json query",strstr(info->system->name, "ipv6") ? TCP_FORCE_IPV6 : TCP_FORCE_IPV4));
-
-	trans.req = request;
-	trans.req_len = request_len;
-	trans.rsp = response_buf;
-	trans.max_rsp_len = response_buflen - 1; /* Save place for a \0 at the end */
-
-	logit(LOG_DEBUG, "Request:\n%s", request);
-	CHECK(http_transaction(&client, &trans));
-
-	http_exit(&client);
-	http_destruct(&client, 1);
-
-	logit(LOG_DEBUG, "Response:\n%s", trans.rsp);
-	CHECK(check_response_code(trans.status));
-
-	body = trans.rsp_body;
-	if (get_result_value(body, key, &key_value) < 0) {
-		rc = RC_DDNS_RSP_NOHOST;
-		goto cleanup;
+	logit(LOG_DEBUG, "retriving '%s' from buffer at %p", key, json);
+	if (get_result_value(json, key, &key_value) < 0) {
+		return RC_DDNS_RSP_NOHOST;
 	}
+	logit(LOG_DEBUG, "found a value (type %d) (starts at %d ('%c'), ends at %d)", key_value.type, key_value.start, json[key_value.start], key_value.end);
 
 	/* Value is often a string, but could be another primative (int).  In
 	   that case, convert it to a string. 
 	   nb: This prohibits later _using_ an int as an int, but... */
 	if (key_value.type == JSMN_STRING) {
-		if (json_copy_value(dest, dest_size, body, &key_value) < 0) {
+		if (json_copy_value(dest, dest_size, json, &key_value) < 0) {
 			logit(LOG_ERR, "Key value did not fit into buffer.");
 			rc = RC_BUFFER_OVERFLOW;
 		}
 	} else if (key_value.type == JSMN_PRIMITIVE) {
-		logit(LOG_DEBUG, "json_extract: PRIMATIVE at %d, len %d (end %d; start with '%c')", key_value.start, key_value.size, key_value.end, body[key_value.start]);
-		/* Verify it's an int.  Should likely later deal with boolean/null */
-		char *copy = strndup(body+key_value.start, key_value.end-key_value.start);
-		logit(LOG_DEBUG, "Primitive for key %s is '%s'", key, copy);
+		logit(LOG_DEBUG, "json_extract: PRIMATIVE at %d, size %d (starts with '%c', ends at %d)", key_value.start, key_value.size, json[key_value.start], key_value.end);
+		
+		/* Copy out the right substring, with nul term. */
+		char *copy = strndup(json+key_value.start, key_value.end-key_value.start);
+		logit(LOG_DEBUG, "Primitive for key '%s' is '%s'", key, copy);
 
-		if (body[key_value.start] == '-' || (body[key_value.start] >= '0' && body[key_value.start] <= '9')) {
+		/* Verify it's an int.  Should likely later deal with boolean/null */
+		// XXX - should use copy here...
+		if (json[key_value.start] == '-' || (json[key_value.start] >= '0' && json[key_value.start] <= '9')) {
 			long rc = strtol(copy, NULL, 10);
 			if ((rc == LONG_MAX) || (strlen(copy) >= dest_size))
 				rc = RC_DDNS_RSP_NOHOST;
@@ -382,9 +351,6 @@ static int json_extract(char *dest, size_t dest_size, const ddns_info_t *info, c
 	}
 
 	logit(LOG_DEBUG, "Key '%s' = %s", key, dest);
-
-cleanup:
-	free(response_buf);
 
 	return rc;
 }
@@ -420,7 +386,7 @@ static int setup(ddns_t *ctx, ddns_info_t *info, ddns_alias_t *hostname)
 	info->data = data;
 
 	record_type = get_record_type(hostname->address);
-
+#if 0
 	logit(LOG_DEBUG, "Domain: %s", domain_name);
 
 	len = snprintf(ctx->request_buf, ctx->request_buflen,
@@ -439,9 +405,9 @@ static int setup(ddns_t *ctx, ddns_info_t *info, ddns_alias_t *hostname)
 		logit(LOG_ERR, "Domain '%s' not found.", domain_name);
 		return rc;
 	}
-	
+	#endif
 	/* Query the unique dynu id from hostname.
-		If more than one record is returned (round-robin dns) use only the first and ignore the others. */
+		If more than one record is returned (round-robin dns?) use only the first and ignore the others. */
 	len = snprintf(ctx->request_buf, ctx->request_buflen,
 			DYNU_HOSTNAME_ID_REQUEST_BY_NAME,
 			hostname->name,
@@ -454,16 +420,28 @@ static int setup(ddns_t *ctx, ddns_info_t *info, ddns_alias_t *hostname)
 		return RC_BUFFER_OVERFLOW;
 	}
 
-	rc = json_extract(data->hostname_id, MAX_ID, info, ctx->request_buf, ctx->request_buflen, "id");
+	CHECK(retrieve_json(ctx->work_buf, ctx->work_buflen, info, ctx->request_buf, ctx->request_buflen));
+	rc = json_extract(data->hostname_id, MAX_ID, ctx->work_buf, "id");
 
 	if (rc == RC_OK) {
-		logit(LOG_DEBUG, "Dynu Host: '%s' Id: %s", hostname->name, data->hostname_id);
+		rc = json_extract(data->domain_id, MAX_ID, ctx->work_buf, "domainId");
+		if (rc == RC_OK) {
+			logit(LOG_DEBUG, "Dynu Host: '%s' Id: %s, Domain Id: %s", hostname->name, data->hostname_id, data->domain_id);
+		} else if (rc == RC_DDNS_RSP_NOHOST) {
+			strcpy(data->domain_id, "");
+			return RC_OK;
+		} else {
+			logit(LOG_INFO, "DomainId for hostname '%s', id %s, not found.", hostname->name, data->hostname_id);
+		}
 	} else if (rc == RC_DDNS_RSP_NOHOST) {
 		strcpy(data->hostname_id, "");
 		return RC_OK;
 	} else {
 		logit(LOG_INFO, "Hostname '%s' not found.", hostname->name);
 	}
+
+cleanup:
+	/* Should I free the info->data I allocated?  I think not... */
 
 	return rc;
 }

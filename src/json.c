@@ -84,7 +84,8 @@ int json_int(const char *json, const jsmntok_t *tok, int *out_value)
 		if (*out_value == 0)
 			return -1;
 		return 0;
-	}
+	} else
+		logit(LOG_DEBUG, "Cannot look for integer in token of type %d", tok->type);
 
 	return -1;
 }
